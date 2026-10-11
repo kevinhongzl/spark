@@ -81,16 +81,28 @@ class TimedeltaOpsTestsMixin:
         if LooseVersion(pd.__version__) < "3.0.0":
             return
 
-        for left_unit, right_unit in [("s", "s"), ("ms", "ms"), ("us", "us"), ("s", "ms")]:
+        # The finer resolution wins regardless of which side it is on.
+        unit_pairs = [
+            ("s", "s"),
+            ("ms", "ms"),
+            ("us", "us"),
+            ("s", "ms"),
+            ("ms", "s"),
+            ("s", "us"),
+            ("us", "s"),
+            ("ms", "us"),
+        ]
+        for left_unit, right_unit in unit_pairs:
             pser1 = pd.Series(np.array([3, 5, 8], dtype=f"timedelta64[{left_unit}]"))
             pser2 = pd.Series(np.array([1, 2, 3], dtype=f"timedelta64[{right_unit}]"))
             psser1, psser2 = ps.from_pandas(pser1), ps.from_pandas(pser2)
             self.assert_eq(pser1 - pser2, psser1 - psser2)
+            self.assert_eq(pser2 - pser1, psser2 - psser1)
             self.assert_eq(pser1 - timedelta(seconds=1), psser1 - timedelta(seconds=1))
             self.assert_eq(timedelta(seconds=1) - pser1, timedelta(seconds=1) - psser1)
 
             # pd.Timedelta is a datetime.timedelta subclass that carries its own resolution.
-            for unit in ["s", "ms"]:
+            for unit in ["s", "ms", "us"]:
                 scalar = pd.Timedelta(1, unit=unit)
                 self.assert_eq(pser1 - scalar, psser1 - scalar)
                 self.assert_eq(scalar - pser1, scalar - psser1)
@@ -98,6 +110,9 @@ class TimedeltaOpsTestsMixin:
         pidx = pd.Index(np.array([3, 5, 8], dtype="timedelta64[s]"))
         psidx = ps.from_pandas(pidx)
         self.assert_eq(pidx - pidx, psidx - psidx)
+        scalar_ms = pd.Timedelta(1, unit="ms")
+        self.assert_eq(pidx - scalar_ms, psidx - scalar_ms)
+        self.assert_eq(timedelta(seconds=1) - pidx, timedelta(seconds=1) - psidx)
 
         # DayTimeIntervalType cannot represent nanoseconds, so nanosecond operands are
         # capped at microseconds rather than matching pandas' nanosecond result.
@@ -105,8 +120,13 @@ class TimedeltaOpsTestsMixin:
         pser_s = pd.Series(np.array([3, 5, 8], dtype="timedelta64[s]"))
         psser_ns, psser_s = ps.from_pandas(pser_ns), ps.from_pandas(pser_s)
         self.assertEqual((psser_ns - psser_ns)._to_pandas().dtype, np.dtype("timedelta64[us]"))
+        self.assertEqual((psser_ns - psser_s)._to_pandas().dtype, np.dtype("timedelta64[us]"))
+        self.assertEqual((psser_s - psser_ns)._to_pandas().dtype, np.dtype("timedelta64[us]"))
         self.assertEqual(
             (psser_s - pd.Timedelta(1, unit="ns"))._to_pandas().dtype, np.dtype("timedelta64[us]")
+        )
+        self.assertEqual(
+            (pd.Timedelta(1, unit="ns") - psser_s)._to_pandas().dtype, np.dtype("timedelta64[us]")
         )
 
         # object-backed interval columns carry no numpy resolution; must not fail.
@@ -115,6 +135,12 @@ class TimedeltaOpsTestsMixin:
         expected = pser_obj.astype("timedelta64[us]")
         self.assert_eq(expected - timedelta(0), psser_obj - timedelta(0))
         self.assert_eq(expected - expected, psser_obj - psser_obj)
+
+        # Against a numpy-backed column, the object-backed side counts as microseconds.
+        pser_s2 = pd.Series(np.array([3, 5], dtype="timedelta64[s]"))
+        psser_s2 = ps.from_pandas(pser_s2)
+        self.assert_eq(expected - pser_s2, psser_obj - psser_s2)
+        self.assert_eq(pser_s2 - expected, psser_s2 - psser_obj)
 
     def test_mul(self):
         self.assertRaises(TypeError, lambda: self.psser * "x")
